@@ -35,16 +35,22 @@ function explain(err) {
   const code = err?.code ?? err?.data?.status;
   if (!err?.data && !code) return err?.message || String(err); // not an X API error
   const detail = err?.data?.detail || err?.data?.title || err?.message || String(err);
-  const hints = {
-    401: "Unauthorized: check the 4 keys/tokens.",
-    403: "Forbidden: app permission must be 'Read and write', then REGENERATE the access token/secret. Also check duplicate text or your API plan.",
-    429: "Rate limited / quota used up. Wait and retry later.",
-  };
   const d = err?.data || {};
+  const reason = d.reason || "";
+  const text = `${d.title || ""} ${d.detail || ""} ${err?.message || ""}`.toLowerCase();
+  // Pick a hint from X's specific reason first; only fall back to the status code.
+  let hint = "";
+  if (reason === "client-not-enrolled") hint = "App is not enrolled in a usable X API plan/Project, or the account has no credits. Keys are fine; fix it in the X Developer Console (Project + billing).";
+  else if (/credit|payment|billing|usage cap|usagecapexceeded/.test(reason + text)) hint = "Out of X API credits / usage cap. Top up in the X Developer Console.";
+  else if (/duplicate/.test(text)) hint = "X rejected duplicate content. Change the text.";
+  else if (/oauth1.*permission|read-only|not permitted to perform/.test(text)) hint = "App permission is not 'Read and write'. Set it, then REGENERATE the access token/secret.";
+  else if (code === 401) hint = "Unauthorized: one of the 4 keys/tokens is wrong or was regenerated.";
+  else if (code === 429) hint = "Rate limited / quota used up. Wait and retry later.";
+  else if (code === 403) hint = "Forbidden. Check the reason above.";
   const diag = [d.reason && `reason=${d.reason}`, d.client_id && `client_id=${d.client_id}`, d.type && `type=${d.type}`]
     .filter(Boolean).join(" ");
   const keyTail = (process.env.X_API_KEY || "").slice(-4);
-  return `X API error${code ? " " + code : ""}: ${detail}${diag ? " | " + diag : ""} | using api_key ...${keyTail}${hints[code] ? " | Hint: " + hints[code] : ""}`;
+  return `X API error${code ? " " + code : ""}: ${detail}${diag ? " | " + diag : ""} | using api_key ...${keyTail}${hint ? " | Hint: " + hint : ""}`;
 }
 
 const BROWSER_HEADERS = {
