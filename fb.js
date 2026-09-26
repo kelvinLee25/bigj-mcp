@@ -1,6 +1,8 @@
 // Facebook group scraping via an Apify Task, returning a compact, image-only list.
 // Env: APIFY_TOKEN, APIFY_TASK_ID (e.g. "kelvin~bigj-fb-groups" or the task's ID)
 
+import { usedSourceKeys, normUrl } from "./history.js";
+
 const APIFY = process.env.APIFY_BASE || "https://api.apify.com/v2";
 
 const isVideo = (a) => /video/i.test(a?.__typename || "") || a?.videoId || a?.playable_duration_in_ms;
@@ -48,7 +50,7 @@ export function compactPosts(items, { maxTextChars = 1200 } = {}) {
   return out;
 }
 
-export async function fetchCandidates({ fresh = true, limit = 15, maxTextChars = 1200 } = {}) {
+export async function fetchCandidates({ fresh = true, limit = 15, maxTextChars = 1200, dryRun = false } = {}) {
   const token = process.env.APIFY_TOKEN;
   const task = process.env.APIFY_TASK_ID;
   if (!token || !task) throw new Error("Missing env: APIFY_TOKEN and/or APIFY_TASK_ID");
@@ -74,8 +76,11 @@ export async function fetchCandidates({ fresh = true, limit = 15, maxTextChars =
     throw new Error(`Apify HTTP ${res.status}: ${body}`);
   }
   const items = await res.json();
-  const posts = compactPosts(items, { maxTextChars });
+  const all = compactPosts(items, { maxTextChars });
+  const used = usedSourceKeys(dryRun);
+  const posts = all.filter((p) => !used.has(normUrl(p.post_url)) && !p.image_urls.some((u) => used.has(normUrl(u))));
+  const skipped_already_posted = all.length - posts.length;
   // most-engaged first
   posts.sort((a, b) => (b.likes || 0) + (b.comments || 0) * 2 - ((a.likes || 0) + (a.comments || 0) * 2));
-  return { scraped: items.length, image_posts: posts.length, posts: posts.slice(0, limit) };
+  return { scraped: items.length, image_posts: all.length, skipped_already_posted, posts: posts.slice(0, limit) };
 }
