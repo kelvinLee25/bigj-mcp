@@ -1,0 +1,22 @@
+{
+  "name": "bigj-mcp",
+  "version": "1.0.0",
+  "description": "Big J AI MCP tools: post to X with images, scrape FB groups via Apify",
+  "type": "module",
+  "bin": {
+    "bigj-mcp": "index.js"
+  },
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "twitter-api-v2": "^1.24.0",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
