@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Big J MCP server (stdio): X posting + Facebook group scraping
-// Tools: x_whoami, x_post_tweet, fb_fetch_candidates, image_reverse_prompt
+// Tools: x_whoami, x_post_tweet, fb_fetch_candidates, image_reverse_prompt, post_history
 // Credentials come from env: X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET
 // Optional: X_DRY_RUN=1 -> never actually posts (for testing)
 // FB: APIFY_TOKEN, APIFY_TASK_ID
@@ -12,6 +12,7 @@ import { TwitterApi } from "twitter-api-v2";
 import { z } from "zod";
 import { fetchCandidates } from "./fb.js";
 import { reversePrompt } from "./vision.js";
+import { recordPost, recentHistory, HISTORY_FILE } from "./history.js";
 
 const log = (...a) => console.error("[bigj-mcp]", ...a); // stderr only; stdout is the MCP channel
 
@@ -121,8 +122,16 @@ server.tool(
     text: z.string().min(1).describe("Tweet text, max 280 characters (CJK counts double)"),
     image_url: z.string().url().optional().describe("Public URL of an image to attach"),
     reply_to_tweet_id: z.string().optional().describe("Tweet ID to reply to, to build a thread"),
+    source_url: z.string().optional().describe("Facebook source post URL. Pass it on the MAIN post so it is never reused."),
+    source_image_url: z.string().optional().describe("Original Facebook image URL, if known"),
+    final_prompt: z.string().optional().describe("The final image prompt, saved to post history"),
   },
-  async ({ text, image_url, reply_to_tweet_id }) => {
+  async ({ text, image_url, reply_to_tweet_id, source_url, source_image_url, final_prompt }) => {
+    const remember = (status, extra = {}) => {
+      if (reply_to_tweet_id) return; // replies (thread parts) are not separate posts
+      try { recordPost({ status, source_url, source_image_url, final_prompt, text, ...extra }); }
+      catch (e) { log("history write failed:", e.message); }
+    };
     try {
       const client = getClient();
       let media_id, image_info;
@@ -140,7 +149,8 @@ server.tool(
       if (reply_to_tweet_id) payload.reply = { in_reply_to_tweet_id: reply_to_tweet_id };
 
       if (DRY_RUN) {
-        return ok({ status: "dry_run", would_post: payload, image_download: image_info || "no image", note: "X_DRY_RUN is on, nothing was posted." });
+        remember("dry_run");
+        return ok({ status: "dry_run", would_post: payload, image_download: image_info || "no image", recorded_in_history: !reply_to_tweet_id, note: "X_DRY_RUN is on, nothing was posted." });
       }
 
       const res = await client.v2.tweet(payload);
@@ -149,7 +159,9 @@ server.tool(
       if (!username) {
         try { username = (await client.v2.me()).data.username; } catch { username = "i"; }
       }
-      return ok({ status: "posted", tweet_id: id, tweet_url: `https://x.com/${username}/status/${id}` });
+      const tweet_url = `https://x.com/${username}/status/${id}`;
+      remember("posted", { tweet_id: id, tweet_url });
+      return ok({ status: "posted", tweet_id: id, tweet_url });
     } catch (e) {
       return fail(explain(e));
     }
@@ -158,14 +170,14 @@ server.tool(
 
 server.tool(
   "fb_fetch_candidates",
-  "Scrape the latest posts from the Big J source Facebook groups (via Apify) and return a compact list of IMAGE posts only (videos and text-only posts are removed). Each item: post_url, text, image_urls, likes, comments.",
+  "Scrape the latest posts from the Big J source Facebook groups (via Apify) and return a compact list of IMAGE posts only (videos, text-only posts and posts Big J already published are removed). Each item: post_url, text, image_urls, likes, comments.",
   {
     fresh: z.boolean().optional().describe("true (default) = run a new scrape (costs ~USD 0.15). false = reuse the last scrape for free, good for testing."),
     limit: z.number().int().min(1).max(30).optional().describe("Max posts to return, default 15"),
   },
   async ({ fresh = true, limit = 15 }) => {
     try {
-      return ok(await fetchCandidates({ fresh, limit }));
+      return ok(await fetchCandidates({ fresh, limit, dryRun: DRY_RUN }));
     } catch (e) {
       return fail(e?.name === "AbortError" ? "Apify scrape timed out (>290s). Try fresh=false or lower resultsLimit in the Apify task." : e?.message || String(e));
     }
@@ -182,6 +194,16 @@ server.tool(
   },
   async (args) => {
     try { return ok(await reversePrompt(args)); }
+    catch (e) { return fail(e?.message || String(e)); }
+  }
+);
+
+server.tool(
+  "post_history",
+  "List Big J's most recent posts (newest first): source_url, final_prompt, tweet_url. Use it to avoid posting an idea too similar to a recent one.",
+  { limit: z.number().int().min(1).max(50).optional().describe("How many, default 15") },
+  async ({ limit = 15 }) => {
+    try { return ok({ history_file: HISTORY_FILE, dry_run_mode: DRY_RUN, posts: recentHistory(limit, DRY_RUN) }); }
     catch (e) { return fail(e?.message || String(e)); }
   }
 );
