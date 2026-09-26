@@ -40,7 +40,11 @@ function explain(err) {
     403: "Forbidden: app permission must be 'Read and write', then REGENERATE the access token/secret. Also check duplicate text or your API plan.",
     429: "Rate limited / quota used up. Wait and retry later.",
   };
-  return `X API error${code ? " " + code : ""}: ${detail}${hints[code] ? " | Hint: " + hints[code] : ""}`;
+  const d = err?.data || {};
+  const diag = [d.reason && `reason=${d.reason}`, d.client_id && `client_id=${d.client_id}`, d.type && `type=${d.type}`]
+    .filter(Boolean).join(" ");
+  const keyTail = (process.env.X_API_KEY || "").slice(-4);
+  return `X API error${code ? " " + code : ""}: ${detail}${diag ? " | " + diag : ""} | using api_key ...${keyTail}${hints[code] ? " | Hint: " + hints[code] : ""}`;
 }
 
 const BROWSER_HEADERS = {
