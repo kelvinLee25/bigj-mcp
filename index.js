@@ -42,21 +42,47 @@ function explain(err) {
   return `X API error${code ? " " + code : ""}: ${detail}${hints[code] ? " | Hint: " + hints[code] : ""}`;
 }
 
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+  Accept: "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+};
+
+// Download an image robustly: browser-like headers, then Grafilab key if needed, with one retry.
 async function downloadImage(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Image download failed: HTTP ${res.status}`);
-  let mime = (res.headers.get("content-type") || "").split(";")[0].trim();
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_IMAGE_BYTES) throw new Error(`Image is ${(buf.length / 1e6).toFixed(1)}MB, X limit is 5MB`);
-  if (!mime.startsWith("image/")) {
-    // sniff by magic bytes
-    if (buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
-    else if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
-    else if (buf.slice(0, 4).toString() === "RIFF") mime = "image/webp";
-    else if (buf.slice(0, 3).toString() === "GIF") mime = "image/gif";
-    else throw new Error(`URL did not return an image (content-type: ${mime || "unknown"})`);
+  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const attempts = [{ ...BROWSER_HEADERS }];
+  if (/grafilab/i.test(host) && process.env.GRAFILAB_API_KEY) {
+    attempts.push({ ...BROWSER_HEADERS, Authorization: `Bearer ${process.env.GRAFILAB_API_KEY}` });
   }
-  return { buf, mime };
+  attempts.push({ ...BROWSER_HEADERS }); // plain retry (transient errors)
+
+  const errors = [];
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500));
+      const res = await fetch(url, { headers: attempts[i], redirect: "follow" });
+      if (!res.ok) {
+        const snippet = (await res.text().catch(() => "")).slice(0, 120).replace(/\s+/g, " ");
+        errors.push(`try${i + 1}: HTTP ${res.status} ${snippet}`);
+        continue;
+      }
+      let mime = (res.headers.get("content-type") || "").split(";")[0].trim();
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!mime.startsWith("image/")) {
+        if (buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
+        else if (buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
+        else if (buf.slice(0, 4).toString() === "RIFF") mime = "image/webp";
+        else if (buf.slice(0, 3).toString() === "GIF") mime = "image/gif";
+        else { errors.push(`try${i + 1}: not an image (content-type: ${mime || "unknown"})`); continue; }
+      }
+      if (buf.length > MAX_IMAGE_BYTES) throw new Error(`Image is ${(buf.length / 1e6).toFixed(1)}MB, X limit is 5MB. Generate a smaller size.`);
+      return { buf, mime };
+    } catch (e) {
+      if (/X limit/.test(e.message)) throw e;
+      errors.push(`try${i + 1}: ${e?.cause?.code || e.message}`);
+    }
+  }
+  throw new Error(`Image download failed for ${host}: ${errors.join(" | ")}`);
 }
 
 async function uploadMedia(client, buf, mime) {
@@ -99,9 +125,10 @@ server.tool(
   async ({ text, image_url, reply_to_tweet_id }) => {
     try {
       const client = getClient();
-      let media_id;
+      let media_id, image_info;
       if (image_url) {
         const { buf, mime } = await downloadImage(image_url);
+        image_info = { mime, bytes: buf.length };
         if (DRY_RUN) {
           media_id = "dry-run-media";
         } else {
@@ -113,7 +140,7 @@ server.tool(
       if (reply_to_tweet_id) payload.reply = { in_reply_to_tweet_id: reply_to_tweet_id };
 
       if (DRY_RUN) {
-        return ok({ status: "dry_run", would_post: payload, note: "X_DRY_RUN is on, nothing was posted." });
+        return ok({ status: "dry_run", would_post: payload, image_download: image_info || "no image", note: "X_DRY_RUN is on, nothing was posted." });
       }
 
       const res = await client.v2.tweet(payload);
