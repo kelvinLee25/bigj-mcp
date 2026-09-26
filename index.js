@@ -127,6 +127,8 @@ server.tool(
     final_prompt: z.string().optional().describe("The final image prompt, saved to post history"),
   },
   async ({ text, image_url, reply_to_tweet_id, source_url, source_image_url, final_prompt }) => {
+    // Models sometimes send a literal backslash-n instead of a real line break; fix it so the tweet looks right.
+    text = String(text).replace(/\\r\\n|\\n/g, "\n").trim();
     const remember = (status, extra = {}) => {
       if (reply_to_tweet_id) return; // replies (thread parts) are not separate posts
       try { recordPost({ status, source_url, source_image_url, final_prompt, text, ...extra }); }
